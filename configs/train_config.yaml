@@ -1,0 +1,88 @@
+# RSNA 2025 Intracranial Aneurysm Detection Training Configuration
+
+# Model settings
+model:
+  architecture: "tf_efficientnet_b0"  # tf_efficientnet_b0, tf_efficientnet_b5, resnet50, etc.
+  num_classes: 14
+  in_channels: 5  # 2.5D window length
+  pretrained: true
+
+# Training settings
+training:
+  epochs: 5
+  batch_size: 34  # Optimized for RTX 2070 8GB (max 43, using 80% for safety)
+  learning_rate: 1.0e-4
+  num_folds: 5
+  use_cv: true
+  mixed_precision: true
+  gradient_accumulation_steps: 1
+  
+  # Optimizer settings
+  optimizer:
+    type: "adam"
+    weight_decay: 0.01
+    betas: [0.9, 0.999]
+  
+  # Scheduler settings
+  scheduler:
+    type: "cosine"
+    warmup_epochs: 1
+    min_lr: 1.0e-6
+
+# Data settings
+data:
+  img_size: 224
+  window_offsets: [-2, -1, 0, 1, 2]  # 5-slice window
+  roi_box_fraction: 0.15
+  roi_min_pixels: 24
+  modalities: ["CTA", "MRA", "MRI T2", "MRI T1post"]  # Use all available modalities
+  
+  # Augmentation settings
+  augmentation:
+    horizontal_flip: 0.5
+    affine:
+      scale: [0.95, 1.05]
+      translate_percent: 0.05
+      rotate: [-10, 10]
+      probability: 0.5
+    gaussian_noise:
+      var_limit: [0.01, 0.05]
+      probability: 0.2
+    motion_blur:
+      blur_limit: 3
+      probability: 0.1
+
+# Paths
+paths:
+  data_dir: "/workspace/Datasets/rsna-intracranial-aneurysm-detection"
+  cache_dir: "/workspace/Datasets/rsna-intracranial-aneurysm-detection/processed_data/2_5d_volumes_full"
+  train_csv: "/workspace/Datasets/rsna-intracranial-aneurysm-detection/train.csv"
+  localizers_csv: "/workspace/Datasets/rsna-intracranial-aneurysm-detection/train_localizers.csv"
+  output_dir: "models"
+
+# System settings
+system:
+  num_workers: 4
+  device: "cuda"  # "cuda" or "cpu"
+  seed: 42
+  
+# Validation settings
+validation:
+  metric: "weighted_auc"  # weighted_auc, aneurysm_present_auc
+  save_best_only: true
+  patience: 3  # Early stopping patience
+  
+# Logging settings
+logging:
+  log_level: "INFO"
+  log_file: "training.log"
+  wandb:
+    enabled: false
+    project: "rsna-aneurysm-detection"
+    entity: null
+
+# Debug settings
+debug:
+  enabled: false
+  subset_per_class: 50
+  fast_dev_run: false  # Run single batch for debugging

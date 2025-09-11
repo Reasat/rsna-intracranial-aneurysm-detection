@@ -1,0 +1,12 @@
+torch
+torchvision
+timm
+numpy
+pandas
+polars
+opencv-python
+pydicom
+scikit-learn
+tqdm
+kaggle
+python-dotenv
