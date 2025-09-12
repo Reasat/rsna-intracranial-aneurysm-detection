@@ -155,66 +155,12 @@ def apply_dicom_windowing(img: np.ndarray, window_center: float, window_width: f
     
     return (windowed * 255).astype(np.uint8)
 
-def apply_statistical_normalization(img: np.ndarray, percentile_range: Tuple[float, float] = (1, 99)) -> np.ndarray:
-    """
-    Apply statistical normalization using percentiles
-    
-    Args:
-        img: Input image array
-        percentile_range: Tuple of (low_percentile, high_percentile)
-    
-    Returns:
-        Normalized image in [0, 255] range
-    """
-    p_low, p_high = np.percentile(img, percentile_range)
-    
-    if p_high > p_low:
-        normalized = np.clip(img, p_low, p_high)
-        normalized = (normalized - p_low) / (p_high - p_low)
-        return (normalized * 255).astype(np.uint8)
-    else:
-        # Fallback: min-max normalization
-        img_min, img_max = img.min(), img.max()
-        if img_max > img_min:
-            normalized = (img - img_min) / (img_max - img_min)
-            return (normalized * 255).astype(np.uint8)
-        else:
-            return np.zeros_like(img, dtype=np.uint8)
-
-def apply_ct_normalization(img: np.ndarray, fixed_range: Tuple[float, float] = CFG.CT_NORMALIZATION_RANGE) -> np.ndarray:
-    """
-    Apply CT-specific normalization with fixed range
-    
-    Args:
-        img: Input CT image array
-        fixed_range: Fixed intensity range for normalization
-    
-    Returns:
-        Normalized image in [0, 255] range
-    """
-    r_min, r_max = fixed_range
-    
-    if r_max > r_min:
-        normalized = np.clip(img, r_min, r_max)
-        normalized = (normalized - r_min) / (r_max - r_min)
-        return (normalized * 255).astype(np.uint8)
-    else:
-        return apply_statistical_normalization(img)
-
-def get_modality_normalization(modality: str) -> callable:
-    """
-    Get appropriate normalization function based on modality
-    
-    Args:
-        modality: DICOM modality ('CT' or 'MR')
-    
-    Returns:
-        Normalization function
-    """
-    if modality == 'CT':
-        return apply_ct_normalization
-    else:  # MR modalities
-        return apply_statistical_normalization
+# Import normalization functions from dedicated module
+from normalization import (
+    apply_statistical_normalization,
+    apply_ct_normalization, 
+    get_modality_normalization
+)
 
 # ====================================================
 # 3D Volume Processor (32-Channel Approach)

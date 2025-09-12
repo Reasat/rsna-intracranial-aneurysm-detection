@@ -12,7 +12,7 @@ Extracted from 2-5d-efficientnet-rsna-cta-training.ipynb with optimizations:
 
 Usage:
     python train.py --config configs/train_config.yaml
-    python train.py --architecture tf_efficientnet_b0 --epochs 10 --batch_size 16
+    python train.py --config configs/train_config.yaml --epochs 10 --batch_size 16
 """
 
 import os
@@ -53,172 +53,93 @@ from utils import (
 class Config:
     """Training configuration loaded from YAML file"""
     
-    def __init__(self, config_path: Optional[str] = None):
-        # Load from YAML file
-        if config_path and os.path.exists(config_path):
-            self.load_from_yaml(config_path)
-        else:
-            # Use default config if no file provided
-            self.load_defaults()
+    def __init__(self, config_path: str):
+        # Require config file - no defaults
+        if not config_path:
+            raise ValueError("Config file path is required")
+        if not os.path.exists(config_path):
+            raise FileNotFoundError(f"Config file not found: {config_path}")
+        
+        self.load_from_yaml(config_path)
     
     def load_from_yaml(self, config_path: str):
-        """Load configuration from YAML file"""
+        """Load configuration from YAML file - all values must be provided"""
         print(f"📄 Loading configuration from: {config_path}")
         with open(config_path, 'r') as f:
             config = yaml.safe_load(f)
         
-        # Model settings
-        model_config = config.get('model', {})
-        self.architecture = model_config.get('architecture', 'tf_efficientnet_b0')
-        self.num_classes = model_config.get('num_classes', 14)
-        self.in_channels = model_config.get('in_channels', 5)
-        self.pretrained = model_config.get('pretrained', True)
+        # Model settings - all required
+        model_config = config['model']
+        self.architecture = model_config['architecture']
+        self.num_classes = model_config['num_classes']
+        self.in_channels = model_config['in_channels']
+        self.pretrained = model_config['pretrained']
         
-        # Training settings
-        training_config = config.get('training', {})
-        self.epochs = training_config.get('epochs', 5)
-        self.batch_size = training_config.get('batch_size', 8)
-        self.learning_rate = training_config.get('learning_rate', 1e-4)
-        self.num_folds = training_config.get('num_folds', 5)
-        self.use_cv = training_config.get('use_cv', True)
-        self.mixed_precision = training_config.get('mixed_precision', True)
-        self.gradient_accumulation_steps = training_config.get('gradient_accumulation_steps', 1)
+        # Training settings - all required
+        training_config = config['training']
+        self.epochs = training_config['epochs']
+        self.batch_size = training_config['batch_size']
+        self.learning_rate = training_config['learning_rate']
+        self.num_folds = training_config['num_folds']
+        self.use_cv = training_config['use_cv']
+        self.mixed_precision = training_config['mixed_precision']
+        self.gradient_accumulation_steps = training_config['gradient_accumulation_steps']
         
-        # Optimizer settings
-        optimizer_config = training_config.get('optimizer', {})
-        self.optimizer_type = optimizer_config.get('type', 'adam')
-        self.weight_decay = optimizer_config.get('weight_decay', 0.01)
-        self.betas = optimizer_config.get('betas', [0.9, 0.999])
+        # Optimizer settings - all required
+        optimizer_config = training_config['optimizer']
+        self.optimizer_type = optimizer_config['type']
+        self.weight_decay = optimizer_config['weight_decay']
+        self.betas = optimizer_config['betas']
         
-        # Scheduler settings  
-        scheduler_config = training_config.get('scheduler', {})
-        self.scheduler_type = scheduler_config.get('type', 'cosine')
-        self.warmup_epochs = scheduler_config.get('warmup_epochs', 1)
-        self.min_lr = scheduler_config.get('min_lr', 1e-6)
+        # Scheduler settings - all required
+        scheduler_config = training_config['scheduler']
+        self.scheduler_type = scheduler_config['type']
+        self.warmup_epochs = scheduler_config['warmup_epochs']
+        self.min_lr = scheduler_config['min_lr']
         
-        # Data settings
-        data_config = config.get('data', {})
-        self.img_size = data_config.get('img_size', 224)
-        self.window_offsets = tuple(data_config.get('window_offsets', [-2, -1, 0, 1, 2]))
-        self.roi_box_fraction = data_config.get('roi_box_fraction', 0.15)
-        self.roi_min_pixels = data_config.get('roi_min_pixels', 24)
-        self.modalities = data_config.get('modalities', ['CTA'])
+        # Data settings - all required
+        data_config = config['data']
+        self.img_size = data_config['img_size']
+        self.window_offsets = tuple(data_config['window_offsets'])
+        self.roi_box_fraction = data_config['roi_box_fraction']
+        self.roi_min_pixels = data_config['roi_min_pixels']
+        self.modalities = data_config['modalities']
         
-        # Augmentation settings
-        aug_config = data_config.get('augmentation', {})
-        self.horizontal_flip_prob = aug_config.get('horizontal_flip', 0.5)
-        self.affine_config = aug_config.get('affine', {})
-        self.gaussian_noise_config = aug_config.get('gaussian_noise', {})
-        self.motion_blur_config = aug_config.get('motion_blur', {})
+        # Augmentation settings - all required
+        aug_config = data_config['augmentation']
+        self.horizontal_flip_prob = aug_config['horizontal_flip']
+        self.affine_config = aug_config['affine']
+        self.gaussian_noise_config = aug_config['gaussian_noise']
+        self.motion_blur_config = aug_config['motion_blur']
         
-        # Paths
-        paths_config = config.get('paths', {})
-        self.data_dir = paths_config.get('data_dir', "/mnt/storage/kaggle_data/rsna-intracranial-aneurysm-detection")
-        self.cache_dir = paths_config.get('cache_dir', "/mnt/storage/kaggle_data/rsna-intracranial-aneurysm-detection/processed_data/2_5d_volumes_full")
-        self.train_csv = paths_config.get('train_csv', "/mnt/storage/kaggle_data/rsna-intracranial-aneurysm-detection/train.csv")
-        self.localizers_csv = paths_config.get('localizers_csv', "/mnt/storage/kaggle_data/rsna-intracranial-aneurysm-detection/train_localizers.csv")
-        self.output_dir = paths_config.get('output_dir', "models")
+        # Paths - all required
+        paths_config = config['paths']
+        self.data_dir = paths_config['data_dir']
+        self.cache_dir = paths_config['cache_dir']
+        self.train_csv = paths_config['train_csv']
+        self.localizers_csv = paths_config['localizers_csv']
+        self.output_dir = paths_config['output_dir']
         
-        # System settings
-        system_config = config.get('system', {})
-        self.num_workers = system_config.get('num_workers', 4)
-        self.device = system_config.get('device', 'cuda' if torch.cuda.is_available() else 'cpu')
-        self.seed = system_config.get('seed', 42)
+        # System settings - all required
+        system_config = config['system']
+        self.num_workers = system_config['num_workers']
+        self.device = system_config['device']
+        self.seed = system_config['seed']
         
-        # Validation settings
-        validation_config = config.get('validation', {})
-        self.metric = validation_config.get('metric', 'weighted_auc')
-        self.save_best_only = validation_config.get('save_best_only', True)
-        self.patience = validation_config.get('patience', 3)
+        # Validation settings - all required
+        validation_config = config['validation']
+        self.metric = validation_config['metric']
+        self.save_best_only = validation_config['save_best_only']
+        self.patience = validation_config['patience']
         
-        # Debug settings
-        debug_config = config.get('debug', {})
-        self.debug_mode = debug_config.get('enabled', False)
-        self.subset_per_class = debug_config.get('subset_per_class', 50)
-        self.fast_dev_run = debug_config.get('fast_dev_run', False)
+        # Debug settings - all required
+        debug_config = config['debug']
+        self.debug_mode = debug_config['enabled']
+        self.subset_per_class = debug_config['subset_per_class']
+        self.fast_dev_run = debug_config['fast_dev_run']
         
         print(f"✅ Configuration loaded successfully")
         
-    def load_defaults(self):
-        """Load default configuration when no YAML file is provided"""
-        print("⚠️  No config file provided, using defaults")
-        
-        # Model settings
-        self.architecture = 'tf_efficientnet_b0'
-        self.num_classes = 14
-        self.in_channels = 5
-        self.pretrained = True
-        
-        # Training settings
-        self.epochs = 5
-        self.batch_size = 8
-        self.learning_rate = 1e-4
-        self.num_folds = 5
-        self.use_cv = True
-        self.mixed_precision = True
-        self.gradient_accumulation_steps = 1
-        
-        # Optimizer settings
-        self.optimizer_type = 'adam'
-        self.weight_decay = 0.01
-        self.betas = [0.9, 0.999]
-        
-        # Scheduler settings
-        self.scheduler_type = 'cosine'
-        self.warmup_epochs = 1
-        self.min_lr = 1e-6
-        
-        # Data settings
-        self.img_size = 224
-        self.window_offsets = (-2, -1, 0, 1, 2)
-        self.roi_box_fraction = 0.15
-        self.roi_min_pixels = 24
-        self.modalities = ['CTA']
-        
-        # Augmentation settings (defaults)
-        self.horizontal_flip_prob = 0.5
-        self.affine_config = {'scale': [0.95, 1.05], 'translate_percent': 0.05, 'rotate': [-10, 10], 'probability': 0.5}
-        self.gaussian_noise_config = {'var_limit': [0.01, 0.05], 'probability': 0.2}
-        self.motion_blur_config = {'blur_limit': 3, 'probability': 0.1}
-        
-        # Paths
-        self.data_dir = "/mnt/storage/kaggle_data/rsna-intracranial-aneurysm-detection"
-        self.cache_dir = "/mnt/storage/kaggle_data/rsna-intracranial-aneurysm-detection/processed_data/2_5d_volumes_full"
-        self.train_csv = "/mnt/storage/kaggle_data/rsna-intracranial-aneurysm-detection/train.csv"
-        self.localizers_csv = "/mnt/storage/kaggle_data/rsna-intracranial-aneurysm-detection/train_localizers.csv"
-        self.output_dir = "models"
-        
-        # System settings
-        self.num_workers = 4
-        self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
-        self.seed = 42
-        
-        # Validation settings
-        self.metric = 'weighted_auc'
-        self.save_best_only = True
-        self.patience = 3
-        
-        # Debug settings
-        self.debug_mode = False
-        self.subset_per_class = 50
-        self.fast_dev_run = False
-    
-    def override_from_args(self, args):
-        """Override configuration with command line arguments"""
-        if args.architecture:
-            self.architecture = args.architecture
-        if args.epochs:
-            self.epochs = args.epochs
-        if args.batch_size:
-            self.batch_size = args.batch_size
-        if args.learning_rate:
-            self.learning_rate = args.learning_rate
-        if args.cache_dir:
-            self.cache_dir = args.cache_dir
-        if args.output_dir:
-            self.output_dir = args.output_dir
-        if args.debug:
-            self.debug_mode = True
     
     def print_config(self):
         """Print current configuration"""
@@ -423,29 +344,29 @@ def create_transforms(config: Config) -> Tuple[A.Compose, Optional[A.Compose]]:
     if hasattr(config, 'affine_config') and config.affine_config:
         affine_cfg = config.affine_config
         transforms.append(A.Affine(
-            scale=affine_cfg.get('scale', (0.95, 1.05)),
+            scale=affine_cfg['scale'],
             translate_percent={
-                'x': (-affine_cfg.get('translate_percent', 0.05), affine_cfg.get('translate_percent', 0.05)),
-                'y': (-affine_cfg.get('translate_percent', 0.05), affine_cfg.get('translate_percent', 0.05))
+                'x': (-affine_cfg['translate_percent'], affine_cfg['translate_percent']),
+                'y': (-affine_cfg['translate_percent'], affine_cfg['translate_percent'])
             },
-            rotate=affine_cfg.get('rotate', (-10, 10)),
-            p=affine_cfg.get('probability', 0.5)
+            rotate=affine_cfg['rotate'],
+            p=affine_cfg['probability']
         ))
     
     # Add noise if configured
     if hasattr(config, 'gaussian_noise_config') and config.gaussian_noise_config:
         noise_cfg = config.gaussian_noise_config
         transforms.append(A.GaussNoise(
-            var_limit=noise_cfg.get('var_limit', (0.01, 0.05)),
-            p=noise_cfg.get('probability', 0.2)
+            var_limit=noise_cfg['var_limit'],
+            p=noise_cfg['probability']
         ))
     
     # Add motion blur if configured
     if hasattr(config, 'motion_blur_config') and config.motion_blur_config:
         blur_cfg = config.motion_blur_config
         transforms.append(A.MotionBlur(
-            blur_limit=blur_cfg.get('blur_limit', 3),
-            p=blur_cfg.get('probability', 0.1)
+            blur_limit=blur_cfg['blur_limit'],
+            p=blur_cfg['probability']
         ))
     
     train_transform = A.Compose(transforms, additional_targets={'image2': 'image'})
@@ -644,14 +565,7 @@ def train_fold(fold: int, train_df: pd.DataFrame, val_df: pd.DataFrame,
 
 def main():
     parser = argparse.ArgumentParser(description="RSNA 2025 Aneurysm Detection Training")
-    parser.add_argument("--config", type=str, help="Path to configuration file")
-    parser.add_argument("--architecture", type=str, default="tf_efficientnet_b0", help="Model architecture")
-    parser.add_argument("--epochs", type=int, default=5, help="Number of epochs")
-    parser.add_argument("--batch_size", type=int, default=8, help="Batch size")
-    parser.add_argument("--learning_rate", type=float, default=1e-4, help="Learning rate")
-    parser.add_argument("--cache_dir", type=str, help="Cache directory path")
-    parser.add_argument("--output_dir", type=str, default="models", help="Output directory")
-    parser.add_argument("--debug", action="store_true", help="Debug mode with subset of data")
+    parser.add_argument("--config", type=str, required=True, help="Path to configuration file")
     
     args = parser.parse_args()
     
@@ -659,11 +573,8 @@ def main():
     timestamp = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
     print(f"🕐 Experiment timestamp: {timestamp}")
     
-    # Load configuration from YAML or use defaults
+    # Load configuration from YAML
     config = Config(args.config)
-    
-    # Override with command line arguments
-    config.override_from_args(args)
     
     # Create timestamped experiment directory
     experiment_dir = os.path.join(config.output_dir, timestamp)

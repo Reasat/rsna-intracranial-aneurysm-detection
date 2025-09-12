@@ -2,6 +2,12 @@
 
 This repository contains analysis and modeling work for the RSNA 2025 Intracranial Aneurysm Detection competition, focusing on detecting and localizing intracranial aneurysms in medical imaging data.
 
+## 📚 Documentation
+
+- **[Normalization Guide](normalization.md)** - Comprehensive guide to image normalization techniques and script integration
+- **[Experiment Stack](experiment_stack.md)** - Training experiment tracking and results
+- **[Kaggle Submission Guide](KAGGLE_SUBMISSION_GUIDE.md)** - Step-by-step submission process
+
 ## 📊 Dataset Statistics
 
 ### Patient Demographics

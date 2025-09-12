@@ -9,8 +9,8 @@ model:
 
 # Training settings
 training:
-  epochs: 5
-  batch_size: 34  # Optimized for RTX 2070 8GB (max 43, using 80% for safety)
+  epochs: 20
+  batch_size: 64  # Optimized for RTX 2070 8GB (max 43, using 80% for safety)
   learning_rate: 1.0e-4
   num_folds: 5
   use_cv: true
@@ -62,7 +62,7 @@ paths:
 
 # System settings
 system:
-  num_workers: 4
+  num_workers: 8
   device: "cuda"  # "cuda" or "cpu"
   seed: 42
   

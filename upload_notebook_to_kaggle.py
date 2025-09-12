@@ -67,7 +67,7 @@ def update_notebook_dataset_reference(notebook_path: str, dataset_name: str) -> 
     return json.dumps(notebook, indent=1)
 
 def upload_timestamped_notebook(dataset_name: str, base_notebook: str = "kaggle_inference.ipynb", 
-                               submission_message: str = None) -> str:
+                               submission_message: str = None, save_intermediate: bool = True) -> str:
     """Upload a timestamped inference notebook to Kaggle"""
     
     if not os.path.exists(base_notebook):
@@ -81,6 +81,12 @@ def upload_timestamped_notebook(dataset_name: str, base_notebook: str = "kaggle_
     
     print(f"📝 Creating timestamped notebook: {notebook_name}")
     
+    # Create submission_notebooks directory if it doesn't exist
+    submission_dir = "submission_notebooks"
+    if save_intermediate:
+        os.makedirs(submission_dir, exist_ok=True)
+        print(f"📁 Created/verified directory: {submission_dir}")
+    
     # Create temporary directory for submission
     with tempfile.TemporaryDirectory() as temp_dir:
         # Update notebook content with correct dataset reference
@@ -91,11 +97,25 @@ def upload_timestamped_notebook(dataset_name: str, base_notebook: str = "kaggle_
         with open(temp_notebook, 'w') as f:
             f.write(updated_notebook_content)
         
+        # Save intermediate notebook if requested
+        if save_intermediate:
+            intermediate_notebook = os.path.join(submission_dir, f"{notebook_name}.ipynb")
+            with open(intermediate_notebook, 'w') as f:
+                f.write(updated_notebook_content)
+            print(f"💾 Saved intermediate notebook: {intermediate_notebook}")
+        
         # Create metadata file
         metadata = create_notebook_metadata(notebook_name, dataset_name)
         metadata_file = os.path.join(temp_dir, "kernel-metadata.json")
         with open(metadata_file, 'w') as f:
             json.dump(metadata, f, indent=2)
+        
+        # Save intermediate metadata if requested
+        if save_intermediate:
+            intermediate_metadata = os.path.join(submission_dir, f"{notebook_name}_metadata.json")
+            with open(intermediate_metadata, 'w') as f:
+                json.dump(metadata, f, indent=2)
+            print(f"💾 Saved intermediate metadata: {intermediate_metadata}")
         
         print(f"📁 Prepared files in: {temp_dir}")
         print(f"📋 Notebook ID: {metadata['id']}")
@@ -142,6 +162,8 @@ def main():
                        help="Base notebook file to upload (default: kaggle_inference.ipynb)")
     parser.add_argument("--message", 
                        help="Submission message")
+    parser.add_argument("--no-save-intermediate", action="store_true",
+                       help="Skip saving intermediate notebooks to submission_notebooks folder")
     
     args = parser.parse_args()
     
@@ -158,11 +180,16 @@ def main():
         notebook_name = upload_timestamped_notebook(
             dataset_name=args.dataset_name,
             base_notebook=args.base_notebook,
-            submission_message=args.message
+            submission_message=args.message,
+            save_intermediate=not args.no_save_intermediate
         )
         
         print(f"\n🎉 Success! Notebook uploaded as: {notebook_name}")
         print(f"🔗 View at: https://www.kaggle.com/code/{os.getenv('KAGGLE_USERNAME')}/{notebook_name}")
+        
+        if not args.no_save_intermediate:
+            print(f"💾 Intermediate files saved to: submission_notebooks/")
+        
         print("\n📝 Next steps:")
         print("1. Visit the notebook URL above")
         print("2. Click 'Save & Run All' to execute")

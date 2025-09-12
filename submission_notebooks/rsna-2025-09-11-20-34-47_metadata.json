@@ -1,0 +1,17 @@
+{
+  "id": "reasat/rsna-2025-09-11-20-34-47",
+  "title": "rsna-2025-09-11-20-34-47",
+  "code_file": "kaggle_inference.ipynb",
+  "language": "python",
+  "kernel_type": "notebook",
+  "is_private": "true",
+  "enable_gpu": "true",
+  "enable_internet": "false",
+  "dataset_sources": [
+    "reasat/2025-09-11-20-34-47"
+  ],
+  "competition_sources": [
+    "rsna-intracranial-aneurysm-detection"
+  ],
+  "kernel_sources": []
+}
