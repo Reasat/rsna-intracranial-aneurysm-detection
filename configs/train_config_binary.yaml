@@ -1,20 +1,20 @@
-# RSNA 2025 Intracranial Aneurysm Detection Training Configuration
+# RSNA 2025 Intracranial Aneurysm Detection - Binary Classification Training Configuration
 
 # Training mode
-training_mode: "multiclass"
+training_mode: "binary"
 
 # Model settings
 model:
   architecture: "tf_efficientnet_b0"  # tf_efficientnet_b0, tf_efficientnet_b5, resnet50, etc.
-  num_classes: 14
+  num_classes: 1  # Binary classification (aneurysm present/absent)
   in_channels: 5  # 2.5D window length
   pretrained: true
 
 # Training settings
 training:
-  epochs: 10
-  batch_size: 64  # Optimized for RTX 2070 8GB (max 43, using 80% for safety)
-  learning_rate: 1.0e-4
+  epochs: 10  # Same as multiclass
+  batch_size: 64  # Same as multiclass
+  learning_rate: 1.0e-4  # Same as multiclass
   num_folds: 5
   use_cv: true
   mixed_precision: true
@@ -25,7 +25,7 @@ training:
     name: "BCEWithLogitsLoss"
     params:
       reduction: "mean"
-      # pos_weight: null  # Uncomment and set for class balancing
+      # pos_weight: null  # Uncomment and set for class balancing if needed
   
   # Optimizer settings
   optimizer:
@@ -36,38 +36,38 @@ training:
   # Scheduler settings
   scheduler:
     type: "cosine"
-    warmup_epochs: 1
+    warmup_epochs: 1  # Same as multiclass
     min_lr: 1.0e-6
 
 # Data settings
 data:
   img_size: 224
   window_offsets: [-2, -1, 0, 1, 2]  # 5-slice window
-  roi_box_fraction: 0.15
-  roi_min_pixels: 24
+  roi_box_fraction: 0.15  # Not used in binary but kept for compatibility
+  roi_min_pixels: 24  # Not used in binary but kept for compatibility
   modalities: ["CTA", "MRA", "MRI T2", "MRI T1post"]  # Use all available modalities
   
-  # Augmentation settings
+  # Augmentation settings (same as multiclass)
   augmentation:
     horizontal_flip: 0.5
     affine:
       scale: [0.95, 1.05]
       translate_percent: 0.05
       rotate: [-10, 10]
-      probability: 0.5
+      probability: 0.5  # Same as multiclass
     gaussian_noise:
       var_limit: [0.01, 0.05]
-      probability: 0.2
+      probability: 0.2  # Same as multiclass
     motion_blur:
       blur_limit: 3
-      probability: 0.1
+      probability: 0.1  # Same as multiclass
 
 # Paths
 paths:
   data_dir: "/workspace/Datasets/rsna-intracranial-aneurysm-detection"
   cache_dir: "/workspace/Datasets/rsna-intracranial-aneurysm-detection/processed_data/2_5d_volumes_full"
   train_csv: "/workspace/Datasets/rsna-intracranial-aneurysm-detection/train.csv"
-  localizers_csv: "/workspace/Datasets/rsna-intracranial-aneurysm-detection/train_localizers.csv"
+  localizers_csv: "/workspace/Datasets/rsna-intracranial-aneurysm-detection/train_localizers.csv"  # Not used in binary but kept for compatibility
   output_dir: "models"
 
 # System settings
@@ -78,21 +78,21 @@ system:
   
 # Validation settings
 validation:
-  metric: "weighted_auc"  # weighted_auc, aneurysm_present_auc
+  metric: "auc"  # Simple ROC AUC for binary classification
   save_best_only: true
-  patience: 3  # Early stopping patience
+  patience: 3  # Same as multiclass
   
 # Logging settings
 logging:
   log_level: "INFO"
-  log_file: "training.log"
+  log_file: "binary_training.log"
   wandb:
     enabled: false
-    project: "rsna-aneurysm-detection"
+    project: "rsna-aneurysm-detection-binary"
     entity: null
 
 # Debug settings
 debug:
   enabled: false
-  subset_per_class: 50
+  subset_per_class: 50  # Same as multiclass
   fast_dev_run: false  # Run single batch for debugging
