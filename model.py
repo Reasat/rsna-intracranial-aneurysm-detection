@@ -41,7 +41,7 @@ class HybridAneurysmModel(nn.Module):
             config.architecture, 
             in_chans=config.in_channels, 
             num_classes=0, 
-            pretrained=True
+            pretrained=config.pretrained
         )
         
         self.num_features = self.backbone.num_features
@@ -89,7 +89,7 @@ class BinaryAneurysmModel(nn.Module):
             config.architecture, 
             in_chans=config.in_channels, 
             num_classes=0, 
-            pretrained=True
+            pretrained=config.pretrained
         )
         
         self.num_features = self.backbone.num_features
