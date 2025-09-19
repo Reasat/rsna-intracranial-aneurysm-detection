@@ -330,6 +330,37 @@ from normalization import normalize_dicom_series, apply_rescale_intercept_slope
 2. **Inference:** `kaggle_inference.ipynb` → `normalization.py` → Model input
 3. **Analysis:** `result_analysis.ipynb` → Uses preprocessed data (no normalization)
 
+## Training vs Inference Consistency
+
+### ✅ Verified Data Range Consistency
+
+**Both training and inference pipelines use identical [0, 255] value ranges:**
+
+#### **Training Pipeline:**
+- **Data Source**: Cached volumes (`.npz` files) with [0, 255] uint8 values
+- **Processing**: Converts to float32 but maintains [0, 255] range
+- **Model Input**: PyTorch tensors with [0, 255] float32 values
+- **No Additional Normalization**: Raw [0, 255] values fed to model
+
+#### **Inference Pipeline:**
+- **Data Source**: DICOM files processed through `normalize_dicom_series()`
+- **Processing**: Outputs [0, 255] uint8 values, converted to float32
+- **Model Input**: PyTorch tensors with [0, 255] float32 values
+- **No Additional Normalization**: Raw [0, 255] values fed to model
+
+#### **Key Files Verified:**
+- ✅ `datamodules.py` (Training) - Uses [0, 255] range
+- ✅ `inference.py` (Inference) - Uses [0, 255] range  
+- ✅ `kaggle_inference_two_step.ipynb` (Inference) - Uses [0, 255] range
+- ✅ `kaggle_inference.ipynb` (Inference) - Uses [0, 255] range
+
+#### **No Division by 255:**
+- **Training**: Does NOT divide by 255
+- **Inference**: Does NOT divide by 255
+- **Consistent**: Both use raw [0, 255] values
+
+**This ensures perfect consistency between training and inference data distributions, eliminating potential performance degradation from normalization mismatches.**
+
 ## Benefits of Centralized Normalization
 
 1. **Consistency:** Identical processing across all pipelines

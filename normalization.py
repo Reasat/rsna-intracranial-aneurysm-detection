@@ -281,6 +281,127 @@ def verify_normalization_consistency(test_data: Optional[np.ndarray] = None) -> 
     return ct_valid and mr_valid and edge_valid
 
 
+def validate_modality_consistency(csv_path: str, dicom_base_dir: str) -> dict:
+    """
+    Cross-validate CSV modality labels with DICOM header modalities
+    
+    This function compares the modality information from train.csv with the actual
+    DICOM header modality tags to detect inconsistencies and mislabeled samples.
+    
+    Args:
+        csv_path: Path to train.csv file
+        dicom_base_dir: Base directory containing DICOM series folders
+    
+    Returns:
+        Dictionary containing validation results and statistics
+    """
+    import pandas as pd
+    import os
+    from pathlib import Path
+    
+    # Load CSV data
+    df = pd.read_csv(csv_path)
+    
+    # Mapping from DICOM modality to CSV modality format
+    dicom_to_csv_mapping = {
+        'CT': 'CTA',  # CT in DICOM typically maps to CTA in this dataset
+        'MR': None,   # MR needs to be determined from CSV (MRA, MRI T2, MRI T1post)
+    }
+    
+    validation_results = {
+        'total_series': len(df),
+        'processed_series': 0,
+        'consistent_modalities': 0,
+        'inconsistent_modalities': 0,
+        'missing_dicom': 0,
+        'dicom_read_errors': 0,
+        'inconsistencies': [],
+        'summary': {}
+    }
+    
+    print(f"Validating modality consistency for {len(df)} series...")
+    
+    for idx, row in df.iterrows():
+        series_id = row['SeriesInstanceUID']
+        csv_modality = row['Modality']
+        
+        # Find DICOM series directory
+        series_path = os.path.join(dicom_base_dir, series_id)
+        
+        if not os.path.exists(series_path):
+            validation_results['missing_dicom'] += 1
+            continue
+        
+        # Find first DICOM file in series
+        dicom_files = []
+        for root, _, files in os.walk(series_path):
+            for file in files:
+                if file.endswith('.dcm'):
+                    dicom_files.append(os.path.join(root, file))
+        
+        if not dicom_files:
+            validation_results['missing_dicom'] += 1
+            continue
+        
+        # Read first DICOM file to get modality
+        try:
+            ds = pydicom.dcmread(dicom_files[0], stop_before_pixels=True)
+            dicom_modality = ds.Modality
+            
+            # Map DICOM modality to CSV format
+            mapped_dicom_modality = dicom_to_csv_mapping.get(dicom_modality)
+            
+            # For MR modalities, we can't distinguish subtypes from DICOM alone
+            # So we check if both are MR-based
+            if dicom_modality == 'MR' and csv_modality in ['MRA', 'MRI T2', 'MRI T1post']:
+                is_consistent = True
+                mapped_dicom_modality = 'MR'  # Generic MR
+            elif dicom_modality == 'CT' and csv_modality == 'CTA':
+                is_consistent = True
+                mapped_dicom_modality = 'CTA'
+            else:
+                is_consistent = False
+            
+            validation_results['processed_series'] += 1
+            
+            if is_consistent:
+                validation_results['consistent_modalities'] += 1
+            else:
+                validation_results['inconsistent_modalities'] += 1
+                validation_results['inconsistencies'].append({
+                    'series_id': series_id,
+                    'csv_modality': csv_modality,
+                    'dicom_modality': dicom_modality,
+                    'mapped_dicom_modality': mapped_dicom_modality,
+                    'dicom_file': dicom_files[0]
+                })
+                
+        except Exception as e:
+            validation_results['dicom_read_errors'] += 1
+            validation_results['inconsistencies'].append({
+                'series_id': series_id,
+                'csv_modality': csv_modality,
+                'dicom_modality': None,
+                'error': str(e),
+                'dicom_file': dicom_files[0]
+            })
+    
+    # Calculate summary statistics
+    total_processed = validation_results['processed_series']
+    if total_processed > 0:
+        consistency_rate = validation_results['consistent_modalities'] / total_processed
+        validation_results['summary'] = {
+            'consistency_rate': consistency_rate,
+            'total_processed': total_processed,
+            'consistent_count': validation_results['consistent_modalities'],
+            'inconsistent_count': validation_results['inconsistent_modalities'],
+            'missing_dicom_count': validation_results['missing_dicom'],
+            'dicom_errors_count': validation_results['dicom_read_errors']
+        }
+    
+    return validation_results
+
+
 def get_normalization_summary() -> dict:
     """
     Get a summary of normalization parameters and methods
@@ -340,3 +461,23 @@ if __name__ == "__main__":
                 print(f"  {k}: {v}")
         else:
             print(f"  {value}")
+    
+    # Example of modality validation (if data paths are available)
+    print("\n" + "=" * 40)
+    print("Modality Validation Example:")
+    print("=" * 40)
+    print("To validate modality consistency between CSV and DICOM headers:")
+    print("```python")
+    print("from normalization import validate_modality_consistency")
+    print("")
+    print("# Validate modality consistency")
+    print("results = validate_modality_consistency(")
+    print("    csv_path='path/to/train.csv',")
+    print("    dicom_base_dir='path/to/series'")
+    print(")")
+    print("")
+    print("# Print results")
+    print("print(f'Consistency Rate: {results[\"summary\"][\"consistency_rate\"]:.2%}')")
+    print("print(f'Total Processed: {results[\"summary\"][\"total_processed\"]}')")
+    print("print(f'Inconsistent: {results[\"summary\"][\"inconsistent_count\"]}')")
+    print("```")

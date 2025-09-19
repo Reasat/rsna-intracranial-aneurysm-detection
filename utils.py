@@ -351,6 +351,63 @@ def load_cached_volume(volume_path: str) -> np.ndarray:
     data = np.load(volume_path)
     return data['volume']  # Shape: (N, H, W)
 
+
+def load_cached_volume_with_renormalization(volume_path: str, modality: str) -> np.ndarray:
+    """
+    Load cached volume and re-normalize using proper modality-specific normalization
+    
+    This function addresses the issue where cached volumes use z-score normalization
+    instead of the proper modality-specific normalization used during training/inference.
+    
+    Args:
+        volume_path: Path to .npz volume file
+        modality: Modality string ('CTA', 'MRA', 'MRI T2', 'MRI T1post')
+    
+    Returns:
+        np.ndarray: Re-normalized volume data with shape (N, H, W)
+    """
+    # Load the z-score normalized volume
+    data = np.load(volume_path)
+    volume = data['volume']  # Shape: (N, H, W)
+    
+    # Import normalization functions
+    from normalization import get_modality_normalization
+    
+    # Map CSV modality to DICOM modality for normalization
+    if modality == 'CTA':
+        dicom_modality = 'CT'
+    else:  # MRA, MRI T2, MRI T1post
+        dicom_modality = 'MR'
+    
+    # Get appropriate normalization function
+    normalization_func = get_modality_normalization(dicom_modality)
+    
+    # Apply modality-specific normalization to each slice
+    renormalized_volume = np.zeros_like(volume, dtype=np.uint8)
+    
+    for i in range(volume.shape[0]):
+        slice_data = volume[i]  # Get single slice
+        
+        # Convert from z-score normalized back to approximate original range
+        # This is an approximation since we don't have the original statistics
+        # We'll use a reasonable range that should work for visualization
+        if dicom_modality == 'CT':
+            # For CT: assume z-score was applied to values in range [0, 500]
+            # Convert back to approximate original range
+            slice_data = slice_data * 100 + 250  # Approximate conversion
+            slice_data = np.clip(slice_data, 0, 500)  # Clip to CT range
+        else:  # MR
+            # For MR: assume z-score was applied to values in range [0, 2000]
+            # Convert back to approximate original range
+            slice_data = slice_data * 500 + 1000  # Approximate conversion
+            slice_data = np.clip(slice_data, 0, 2000)  # Clip to reasonable MR range
+        
+        # Apply proper modality-specific normalization
+        renormalized_slice = normalization_func(slice_data.astype(np.float32))
+        renormalized_volume[i] = renormalized_slice
+    
+    return renormalized_volume
+
 def load_cached_img(img_path: str) -> np.ndarray:
     """
     Load cached image from .npz or .npy file

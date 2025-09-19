@@ -27,7 +27,7 @@ from tqdm import tqdm
 # Import from utils to get LABEL_COLS and ID_COL
 from pathlib import Path
 sys.path.append(str(Path(__file__).parent))
-from utils import LABEL_COLS, ID_COL, load_cached_volume, take_window
+from utils import LABEL_COLS, ID_COL, load_cached_volume, load_cached_volume_with_renormalization, take_window
 from train import HybridAneurysmModel, Config
 
 
@@ -66,11 +66,12 @@ def extract_modality_mapping(sample_ids: List[str], csv_path: str) -> Dict[str, 
 class InferenceEngine:
     """Handles data loading, model loading, and prediction collection for cross-fold analysis"""
     
-    def __init__(self, experiment_dir: str, config: Config):
+    def __init__(self, experiment_dir: str, config: Config, aggregation: str = "max"):
         self.experiment_dir = experiment_dir
         self.config = config
         self.device = config.device
         self.num_classes = len(LABEL_COLS)
+        self.aggregation = aggregation  # "max" or "mean"
         
         # Data storage
         self.fold_assignments = {}
@@ -162,9 +163,14 @@ class InferenceEngine:
                         all_predictions.append(probs)
             
             if all_predictions:
-                # Aggregate across windows (max aggregation)
+                # Aggregate across windows
                 all_preds = np.vstack(all_predictions)
-                series_pred = all_preds.max(axis=0)
+                if self.aggregation == "max":
+                    series_pred = all_preds.max(axis=0)
+                elif self.aggregation == "mean":
+                    series_pred = all_preds.mean(axis=0)
+                else:
+                    raise ValueError(f"Unknown aggregation method: {self.aggregation}. Use 'max' or 'mean'.")
                 return series_pred
             else:
                 return np.zeros(self.num_classes, dtype=np.float32)
@@ -624,9 +630,10 @@ class VisualizationEngine:
         
         # Count hard samples by type
         hard_sample_counts = {
-            'High Confidence Wrong': len(hard_samples['high_confidence_wrong']),
+            'High Confidence Errors': len(hard_samples['high_confidence_errors']),
             'Low Confidence Correct': len(hard_samples['low_confidence_correct']),
-            'Ambiguous Boundary': len(hard_samples['ambiguous_boundary'])
+            'Borderline Predictions': len(hard_samples['borderline_predictions']),
+            'Modality Specific Errors': len(hard_samples['modality_specific_errors'])
         }
         
         # Plot 1: Hard sample counts
@@ -635,18 +642,24 @@ class VisualizationEngine:
         axes[0, 0].set_ylabel('Count')
         axes[0, 0].tick_params(axis='x', rotation=45)
         
-        # Plot 2: Hard samples by class
+        # Plot 2: Hard samples by class (or true label for binary)
         class_hard_counts = {}
         for hard_type, samples in hard_samples.items():
             for sample in samples:
-                class_name = sample['class_name']
+                # For binary classification, use true_label instead of class_name
+                if 'class_name' in sample:
+                    class_name = sample['class_name']
+                else:
+                    # Binary case: use true_label
+                    class_name = f"Label: {sample['true_label']}"
+                
                 if class_name not in class_hard_counts:
                     class_hard_counts[class_name] = 0
                 class_hard_counts[class_name] += 1
         
         if class_hard_counts:
             axes[0, 1].bar(class_hard_counts.keys(), class_hard_counts.values())
-            axes[0, 1].set_title('Hard Samples by Class')
+            axes[0, 1].set_title('Hard Samples by Class/Label')
             axes[0, 1].set_ylabel('Count')
             axes[0, 1].tick_params(axis='x', rotation=45)
         
@@ -655,7 +668,15 @@ class VisualizationEngine:
         all_types = []
         for hard_type, samples in hard_samples.items():
             for sample in samples:
-                all_confidences.append(sample['confidence'])
+                # Handle different confidence field names
+                if 'confidence' in sample:
+                    conf = sample['confidence']
+                elif 'prediction' in sample:
+                    # For borderline predictions, use prediction as confidence
+                    conf = sample['prediction']
+                else:
+                    continue  # Skip samples without confidence info
+                all_confidences.append(conf)
                 all_types.append(hard_type)
         
         if all_confidences:
@@ -671,7 +692,15 @@ class VisualizationEngine:
         all_confidences = []
         for hard_type, samples in hard_samples.items():
             for sample in samples:
-                all_confidences.append(sample['confidence'])
+                # Handle different confidence field names
+                if 'confidence' in sample:
+                    conf = sample['confidence']
+                elif 'prediction' in sample:
+                    # For borderline predictions, use prediction as confidence
+                    conf = sample['prediction']
+                else:
+                    continue  # Skip samples without confidence info
+                all_confidences.append(conf)
         
         if all_confidences:
             axes[1, 1].hist(all_confidences, bins=20, alpha=0.7, edgecolor='black')
@@ -684,10 +713,19 @@ class VisualizationEngine:
 
     def _plot_roc_curves_per_class(self, per_class_analysis, true_labels_df):
         """Plot ROC curves for each class"""
-        fig, axes = plt.subplots(3, 5, figsize=(20, 12))
-        axes = axes.flatten()
+        # Check if this is binary analysis (only one class in per_class_analysis)
+        if len(per_class_analysis) == 1:
+            # Binary case - create a single subplot
+            fig, ax = plt.subplots(1, 1, figsize=(8, 6))
+            axes = [ax]
+            class_names = list(per_class_analysis.keys())
+        else:
+            # Multi-class case - use original layout
+            fig, axes = plt.subplots(3, 5, figsize=(20, 12))
+            axes = axes.flatten()
+            class_names = LABEL_COLS
         
-        for i, class_name in enumerate(LABEL_COLS):
+        for i, class_name in enumerate(class_names):
             if i >= len(axes):
                 break
                 
@@ -699,7 +737,13 @@ class VisualizationEngine:
                 if sample_id in true_labels_df[ID_COL].values:
                     true_label = true_labels_df[true_labels_df[ID_COL] == sample_id][class_name].iloc[0]
                     ensemble_pred = self.inference_engine.create_oof_ensemble(sample_id)
-                    pred_score = ensemble_pred[i]
+                    
+                    # For binary case, use index 0 (only one prediction)
+                    # For multi-class case, use the class index
+                    if len(per_class_analysis) == 1:
+                        pred_score = ensemble_pred[0]  # Binary case
+                    else:
+                        pred_score = ensemble_pred[i]  # Multi-class case
                     
                     y_true.append(true_label)
                     y_pred.append(pred_score)
@@ -719,9 +763,10 @@ class VisualizationEngine:
                             ha='center', va='center', transform=axes[i].transAxes)
                 axes[i].set_title(class_name)
         
-        # Hide unused subplots
-        for i in range(len(LABEL_COLS), len(axes)):
-            axes[i].set_visible(False)
+        # Hide unused subplots (only for multi-class case)
+        if len(per_class_analysis) > 1:
+            for i in range(len(LABEL_COLS), len(axes)):
+                axes[i].set_visible(False)
         
         plt.tight_layout()
         plt.show()
@@ -762,27 +807,66 @@ class VisualizationEngine:
             axes[0, 1].text(i, rate + max(aneurysm_rates) * 0.01, f'{rate:.1f}%', 
                            ha='center', va='bottom')
         
-        # Plot 3: Overall AUC by modality
-        aucs = []
+        # Plot 3: Per-modality ROC curves
+        colors = ['blue', 'red', 'green', 'orange', 'purple', 'brown', 'pink', 'gray']
+        for i, mod in enumerate(modalities):
+            # Get predictions and true labels for this modality
+            modality_predictions = []
+            modality_true_labels = []
+            
+            # For binary analysis, get the "Aneurysm Present" class data
+            if 'per_class_analysis' in modality_analysis[mod]:
+                class_analysis = modality_analysis[mod]['per_class_analysis']
+                if 'Aneurysm Present' in class_analysis:
+                    modality_predictions = class_analysis['Aneurysm Present']['predictions']
+                    modality_true_labels = class_analysis['Aneurysm Present']['true_labels']
+            
+            # Plot ROC curve if we have both classes
+            if len(set(modality_true_labels)) > 1 and len(modality_predictions) > 0:
+                fpr, tpr, _ = roc_curve(modality_true_labels, modality_predictions)
+                auc = roc_auc_score(modality_true_labels, modality_predictions)
+                
+                color = colors[i % len(colors)]
+                axes[1, 0].plot(fpr, tpr, linewidth=2, color=color, 
+                               label=f'{mod} (AUC = {auc:.3f})')
+        
+        # Add diagonal line for random classifier
+        axes[1, 0].plot([0, 1], [0, 1], 'k--', alpha=0.5, label='Random Classifier')
+        axes[1, 0].set_title('ROC Curves by Modality')
+        axes[1, 0].set_xlabel('False Positive Rate')
+        axes[1, 0].set_ylabel('True Positive Rate')
+        axes[1, 0].legend()
+        axes[1, 0].grid(True, alpha=0.3)
+        
+        # Print AUC values for each modality
+        print("\n📊 Per-Modality AUC Values:")
         for mod in modalities:
-            auc = modality_analysis[mod]['overall_metrics'].get('auc', 0.0)
-            aucs.append(auc)
-        
-        bars = axes[1, 0].bar(modalities, aucs, alpha=0.7, color='lightgreen')
-        axes[1, 0].set_title('Overall AUC by Modality')
-        axes[1, 0].set_ylabel('AUC Score')
-        axes[1, 0].set_ylim(0, 1)
-        axes[1, 0].tick_params(axis='x', rotation=45)
-        
-        # Add AUC labels on bars
-        for i, auc in enumerate(aucs):
-            axes[1, 0].text(i, auc + 0.01, f'{auc:.3f}', ha='center', va='bottom')
+            if 'per_class_analysis' in modality_analysis[mod]:
+                class_analysis = modality_analysis[mod]['per_class_analysis']
+                if 'Aneurysm Present' in class_analysis:
+                    modality_predictions = class_analysis['Aneurysm Present']['predictions']
+                    modality_true_labels = class_analysis['Aneurysm Present']['true_labels']
+                    if len(set(modality_true_labels)) > 1 and len(modality_predictions) > 0:
+                        auc = roc_auc_score(modality_true_labels, modality_predictions)
+                        print(f"  • {mod}: {auc:.3f}")
+                    else:
+                        print(f"  • {mod}: Insufficient data for AUC calculation")
         
         # Plot 4: Error rate by modality
         error_rates = []
         for mod in modalities:
-            total_errors = (len(modality_analysis[mod]['misclassifications']['false_positives']) + 
-                           len(modality_analysis[mod]['misclassifications']['false_negatives']))
+            # Handle different modality analysis structures
+            if 'misclassifications' in modality_analysis[mod]:
+                # Multi-class case
+                total_errors = (len(modality_analysis[mod]['misclassifications']['false_positives']) + 
+                               len(modality_analysis[mod]['misclassifications']['false_negatives']))
+            elif 'confusion_matrix' in modality_analysis[mod]:
+                # Binary case
+                cm = modality_analysis[mod]['confusion_matrix']
+                total_errors = cm['false_positives'] + cm['false_negatives']
+            else:
+                total_errors = 0
+            
             total_samples = modality_analysis[mod]['total_samples']
             error_rate = (total_errors / total_samples) * 100 if total_samples > 0 else 0
             error_rates.append(error_rate)
@@ -803,7 +887,15 @@ class VisualizationEngine:
     def _plot_modality_class_performance(self, modality_analysis):
         """Plot per-class performance across modalities"""
         modalities = list(modality_analysis.keys())
-        class_names = LABEL_COLS
+        
+        # Check if this is binary analysis
+        sample_mod = list(modality_analysis.values())[0] if modality_analysis else {}
+        if 'per_class_analysis' in sample_mod and len(sample_mod['per_class_analysis']) == 1:
+            # Binary case - use the single class from per_class_analysis
+            class_names = list(sample_mod['per_class_analysis'].keys())
+        else:
+            # Multi-class case - use LABEL_COLS
+            class_names = LABEL_COLS
         
         # Create a comprehensive heatmap
         fig, axes = plt.subplots(2, 2, figsize=(20, 16))
@@ -911,8 +1003,14 @@ class VisualizationEngine:
         """Plot confidence distributions by modality"""
         modalities = list(modality_analysis.keys())
         
-        # Select 4 classes to plot
-        selected_classes = LABEL_COLS[:4]
+        # Check if this is binary analysis
+        sample_mod = list(modality_analysis.values())[0] if modality_analysis else {}
+        if 'per_class_analysis' in sample_mod and len(sample_mod['per_class_analysis']) == 1:
+            # Binary case - use the single class
+            selected_classes = list(sample_mod['per_class_analysis'].keys())
+        else:
+            # Multi-class case - select 4 classes to plot
+            selected_classes = LABEL_COLS[:4]
         
         fig, axes = plt.subplots(2, 2, figsize=(16, 12))
         axes = axes.flatten()
@@ -949,13 +1047,31 @@ class VisualizationEngine:
         fig, axes = plt.subplots(2, 2, figsize=(16, 12))
         
         # Plot 1: Hard sample counts by modality
+        # Check if we have binary or multi-class hard samples
+        sample_mod = list(modality_hard_samples.values())[0] if modality_hard_samples else {}
+        if 'ambiguous_boundary' in sample_mod:
+            # Multi-class case
+            categories = ['High Confidence Wrong', 'Low Confidence Correct', 'Ambiguous Boundary', 'Modality Specific Errors']
+            key_mapping = {
+                'High Confidence Wrong': 'high_confidence_wrong',
+                'Low Confidence Correct': 'low_confidence_correct', 
+                'Ambiguous Boundary': 'ambiguous_boundary',
+                'Modality Specific Errors': 'modality_specific_errors'
+            }
+        else:
+            # Binary case
+            categories = ['High Confidence Errors', 'Low Confidence Correct', 'Borderline Predictions']
+            key_mapping = {
+                'High Confidence Errors': 'high_confidence_errors',
+                'Low Confidence Correct': 'low_confidence_correct',
+                'Borderline Predictions': 'borderline_predictions'
+            }
+        
         hard_sample_counts = {}
         for mod in modalities:
             counts = {
-                'High Confidence Wrong': len(modality_hard_samples[mod]['high_confidence_wrong']),
-                'Low Confidence Correct': len(modality_hard_samples[mod]['low_confidence_correct']),
-                'Ambiguous Boundary': len(modality_hard_samples[mod]['ambiguous_boundary']),
-                'Modality Specific Errors': len(modality_hard_samples[mod]['modality_specific_errors'])
+                cat: len(modality_hard_samples[mod].get(key_mapping[cat], []))
+                for cat in categories
             }
             hard_sample_counts[mod] = counts
         
@@ -963,8 +1079,7 @@ class VisualizationEngine:
         x = np.arange(len(modalities))
         width = 0.2
         
-        categories = ['High Confidence Wrong', 'Low Confidence Correct', 'Ambiguous Boundary', 'Modality Specific Errors']
-        colors = ['red', 'blue', 'orange', 'purple']
+        colors = ['red', 'blue', 'orange', 'purple'][:len(categories)]
         
         for i, (category, color) in enumerate(zip(categories, colors)):
             values = [hard_sample_counts[mod][category] for mod in modalities]
@@ -988,10 +1103,8 @@ class VisualizationEngine:
             total = total_samples[mod]
             if total > 0:
                 hard_sample_rates[mod] = {
-                    'High Confidence Wrong': len(modality_hard_samples[mod]['high_confidence_wrong']) / total * 100,
-                    'Low Confidence Correct': len(modality_hard_samples[mod]['low_confidence_correct']) / total * 100,
-                    'Ambiguous Boundary': len(modality_hard_samples[mod]['ambiguous_boundary']) / total * 100,
-                    'Modality Specific Errors': len(modality_hard_samples[mod]['modality_specific_errors']) / total * 100
+                    cat: len(modality_hard_samples[mod].get(key_mapping[cat], [])) / total * 100
+                    for cat in categories
                 }
             else:
                 hard_sample_rates[mod] = {cat: 0 for cat in categories}
@@ -1009,9 +1122,18 @@ class VisualizationEngine:
         # Plot 3: Confidence distribution for hard samples by modality
         for mod in modalities:
             all_confidences = []
-            for category in ['high_confidence_wrong', 'low_confidence_correct', 'ambiguous_boundary']:
-                for sample in modality_hard_samples[mod][category]:
-                    all_confidences.append(sample['confidence'])
+            for category in categories:
+                category_key = key_mapping[category]
+                for sample in modality_hard_samples[mod].get(category_key, []):
+                    # Handle different confidence field names
+                    if 'confidence' in sample:
+                        conf = sample['confidence']
+                    elif 'prediction' in sample:
+                        # For borderline predictions, use prediction as confidence
+                        conf = sample['prediction']
+                    else:
+                        continue  # Skip samples without confidence info
+                    all_confidences.append(conf)
             
             if all_confidences:
                 axes[1, 0].hist(all_confidences, alpha=0.6, label=mod, bins=15, density=True)
@@ -1026,9 +1148,21 @@ class VisualizationEngine:
         class_error_counts = {}
         for mod in modalities:
             class_errors = {}
-            for sample in modality_hard_samples[mod]['modality_specific_errors']:
-                class_name = sample['class_name']
-                class_errors[class_name] = class_errors.get(class_name, 0) + 1
+            # Check if modality_specific_errors exists (multi-class case)
+            if 'modality_specific_errors' in modality_hard_samples[mod]:
+                for sample in modality_hard_samples[mod]['modality_specific_errors']:
+                    # For binary classification, use true_label instead of class_name
+                    if 'class_name' in sample:
+                        class_name = sample['class_name']
+                    else:
+                        # Binary case: use true_label
+                        class_name = f"Label: {sample['true_label']}"
+                    class_errors[class_name] = class_errors.get(class_name, 0) + 1
+            else:
+                # For binary case, use high_confidence_errors as the error category
+                for sample in modality_hard_samples[mod].get('high_confidence_errors', []):
+                    class_name = f"Label: {sample['true_label']}"
+                    class_errors[class_name] = class_errors.get(class_name, 0) + 1
             class_error_counts[mod] = class_errors
         
         # Create stacked bar chart
@@ -1065,10 +1199,19 @@ class VisualizationEngine:
         
         for mod in modalities:
             # Count false positives and false negatives
-            fp_count = len([s for s in modality_hard_samples[mod]['modality_specific_errors'] 
-                           if s['true_label'] == 0])
-            fn_count = len([s for s in modality_hard_samples[mod]['modality_specific_errors'] 
-                           if s['true_label'] == 1])
+            # Check if modality_specific_errors exists (multi-class case)
+            if 'modality_specific_errors' in modality_hard_samples[mod]:
+                # Multi-class case
+                fp_count = len([s for s in modality_hard_samples[mod]['modality_specific_errors'] 
+                               if s['true_label'] == 0])
+                fn_count = len([s for s in modality_hard_samples[mod]['modality_specific_errors'] 
+                               if s['true_label'] == 1])
+            else:
+                # Binary case - use high_confidence_errors as the error category
+                fp_count = len([s for s in modality_hard_samples[mod].get('high_confidence_errors', []) 
+                               if s['true_label'] == 0])
+                fn_count = len([s for s in modality_hard_samples[mod].get('high_confidence_errors', []) 
+                               if s['true_label'] == 1])
             
             # Get total samples for this modality
             total_samples = len([sid for sid, mod_name in self.inference_engine.sample_modalities.items() 
@@ -1094,7 +1237,18 @@ class VisualizationEngine:
         
         # Plot 2: Error confidence distribution by modality
         for mod in modalities:
-            error_confidences = [s['confidence'] for s in modality_hard_samples[mod]['modality_specific_errors']]
+            # Check if modality_specific_errors exists (multi-class case)
+            if 'modality_specific_errors' in modality_hard_samples[mod]:
+                error_confidences = [s['confidence'] for s in modality_hard_samples[mod]['modality_specific_errors']]
+            else:
+                # Binary case - use high_confidence_errors as the error category
+                error_confidences = []
+                for s in modality_hard_samples[mod].get('high_confidence_errors', []):
+                    if 'confidence' in s:
+                        error_confidences.append(s['confidence'])
+                    elif 'prediction' in s:
+                        error_confidences.append(s['prediction'])
+            
             if error_confidences:
                 axes[0, 1].hist(error_confidences, alpha=0.6, label=mod, bins=15, density=True)
         
@@ -1106,7 +1260,13 @@ class VisualizationEngine:
         
         # Plot 3: Prediction score distribution for errors by modality
         for mod in modalities:
-            error_predictions = [s['prediction'] for s in modality_hard_samples[mod]['modality_specific_errors']]
+            # Check if modality_specific_errors exists (multi-class case)
+            if 'modality_specific_errors' in modality_hard_samples[mod]:
+                error_predictions = [s['prediction'] for s in modality_hard_samples[mod]['modality_specific_errors']]
+            else:
+                # Binary case - use high_confidence_errors as the error category
+                error_predictions = [s['prediction'] for s in modality_hard_samples[mod].get('high_confidence_errors', [])]
+            
             if error_predictions:
                 axes[1, 0].hist(error_predictions, alpha=0.6, label=mod, bins=15, density=True)
         
@@ -1117,17 +1277,31 @@ class VisualizationEngine:
         axes[1, 0].grid(True, alpha=0.3)
         
         # Plot 4: Error count by class and modality (heatmap)
-        error_matrix = np.zeros((len(modalities), len(LABEL_COLS)))
-        for i, mod in enumerate(modalities):
-            for j, class_name in enumerate(LABEL_COLS):
-                count = len([s for s in modality_hard_samples[mod]['modality_specific_errors'] 
-                           if s['class_name'] == class_name])
-                error_matrix[i, j] = count
+        # Check if this is binary analysis
+        sample_mod = list(modality_hard_samples.values())[0] if modality_hard_samples else {}
+        if 'modality_specific_errors' in sample_mod:
+            # Multi-class case
+            class_names = LABEL_COLS
+            error_matrix = np.zeros((len(modalities), len(class_names)))
+            for i, mod in enumerate(modalities):
+                for j, class_name in enumerate(class_names):
+                    count = len([s for s in modality_hard_samples[mod]['modality_specific_errors'] 
+                               if s['class_name'] == class_name])
+                    error_matrix[i, j] = count
+        else:
+            # Binary case - use true_label instead of class_name
+            class_names = ['Label: 0', 'Label: 1']  # Binary labels
+            error_matrix = np.zeros((len(modalities), len(class_names)))
+            for i, mod in enumerate(modalities):
+                for j, class_label in enumerate([0, 1]):
+                    count = len([s for s in modality_hard_samples[mod].get('high_confidence_errors', []) 
+                               if s['true_label'] == class_label])
+                    error_matrix[i, j] = count
         
         im = axes[1, 1].imshow(error_matrix, cmap='Reds', aspect='auto')
         axes[1, 1].set_title('Error Count Heatmap by Modality and Class')
-        axes[1, 1].set_xticks(range(len(LABEL_COLS)))
-        axes[1, 1].set_xticklabels(LABEL_COLS, rotation=45, ha='right')
+        axes[1, 1].set_xticks(range(len(class_names)))
+        axes[1, 1].set_xticklabels(class_names, rotation=45, ha='right')
         axes[1, 1].set_yticks(range(len(modalities)))
         axes[1, 1].set_yticklabels(modalities)
         axes[1, 1].set_xlabel('Classes')
@@ -1135,7 +1309,7 @@ class VisualizationEngine:
         
         # Add text annotations
         for i in range(len(modalities)):
-            for j in range(len(LABEL_COLS)):
+            for j in range(len(class_names)):
                 text = axes[1, 1].text(j, i, f'{int(error_matrix[i, j])}',
                                      ha="center", va="center", color="white" if error_matrix[i, j] > error_matrix.max()/2 else "black")
         
@@ -1143,3 +1317,323 @@ class VisualizationEngine:
         
         plt.tight_layout()
         plt.show()
+
+
+def compute_window_predictions(volume: np.ndarray, model, window_offsets: tuple = (-2, -1, 0, 1, 2)) -> dict:
+    """
+    Compute predictions for all windows in a volume
+    
+    Args:
+        volume: 3D volume array (N, H, W)
+        model: PyTorch model for inference
+        window_offsets: Window offsets for 5-slice window
+        
+    Returns:
+        Dict mapping center_idx to probability {center_idx: prob}
+    """
+    N, H, W = volume.shape
+    window_predictions = {}
+    
+    # Determine valid center indices
+    min_center = max(0, -min(window_offsets))
+    max_center = min(N - 1, N - 1 - max(window_offsets))
+    
+    for center_idx in range(min_center, max_center + 1):
+        try:
+            # Extract window
+            window = take_window(volume, center_idx, window_offsets)
+            
+            # Convert to tensor format
+            img_hwc = np.transpose(window, (1, 2, 0)).astype(np.float32)
+            img_resized = cv2.resize(img_hwc, (224, 224))  # Assuming 224x224 input size
+            
+            # Convert to CHW tensor
+            x_full = torch.from_numpy(np.transpose(img_resized, (2, 0, 1))).float()
+            x_roi = x_full.clone()  # Same for both streams
+            coords = torch.zeros(2).float()  # No coordinates available
+            
+            # Add batch dimension and move to device
+            device = next(model.parameters()).device
+            x_full = x_full.unsqueeze(0).to(device)
+            x_roi = x_roi.unsqueeze(0).to(device)
+            coords = coords.unsqueeze(0).to(device)
+            
+            # Get prediction
+            with torch.no_grad():
+                logits = model(x_full, x_roi, coords)
+                prob = torch.sigmoid(logits).cpu().numpy()[0][0]
+                window_predictions[center_idx] = prob
+                
+        except Exception as e:
+            print(f"Warning: Could not get prediction for slice {center_idx}: {e}")
+            continue
+    
+    return window_predictions
+
+
+def create_sample_montage(volume: np.ndarray, sample_id: str, prediction: float, 
+                         ground_truth: int, window_predictions: dict = None, 
+                         num_windows: int = 9, window_offsets: tuple = (-2, -1, 0, 1, 2)) -> plt.Figure:
+    """
+    Create a montage visualization of random windows from a sample volume
+
+    Args:
+        volume: 3D volume array (N, H, W)
+        sample_id: Sample identifier
+        prediction: Model prediction probability (aggregated)
+        ground_truth: Ground truth label (0 or 1)
+        window_predictions: Dict mapping center_idx to probability {center_idx: prob}
+        num_windows: Number of windows to display in montage
+        window_offsets: Window offsets for 5-slice window
+
+    Returns:
+        matplotlib Figure object
+    """
+    N, H, W = volume.shape
+
+    # Set random seed for reproducibility
+    np.random.seed(42)
+
+    # Select random slice indices for windows
+    if N < len(window_offsets):
+        # If volume has fewer slices than window size, use all slices
+        center_indices = list(range(N))
+    else:
+        # Select random center indices, ensuring we can extract full windows
+        min_center = max(0, -min(window_offsets))
+        max_center = min(N - 1, N - 1 - max(window_offsets))
+        center_indices = np.random.choice(
+            range(min_center, max_center + 1),
+            size=min(num_windows, max_center - min_center + 1),
+            replace=False
+        )
+        # Sort the selected indices so montage is in ascending order
+        center_indices = sorted(center_indices)
+
+    # Create figure
+    fig, axes = plt.subplots(3, 3, figsize=(12, 12))
+    fig.suptitle(f'Sample: {sample_id}\nAggregated Prediction: {prediction:.3f} | Ground Truth: {ground_truth}', 
+                 fontsize=14, fontweight='bold')
+
+    # Color mapping for ground truth
+    gt_color = 'green' if ground_truth == 1 else 'red'
+    pred_color = 'green' if prediction >= 0.5 else 'red'
+
+    for idx, center_idx in enumerate(center_indices):
+        if idx >= 9:  # Limit to 3x3 grid
+            break
+
+        row, col = idx // 3, idx % 3
+        ax = axes[row, col]
+
+        # Extract 5-slice window
+        window = take_window(volume, center_idx, window_offsets)
+
+        # Convert to RGB by selecting 3 channels (indices 0, 2, 4)
+        if window.shape[0] >= 3:
+            rgb_window = window[[0, 2, 4], :, :]  # Use slices 0, 2, 4 as RGB
+        else:
+            # If fewer than 3 slices, repeat the available slices
+            rgb_window = np.stack([window[0], window[0], window[-1]])
+
+        # Normalize to 0-1 range
+        rgb_window = (rgb_window - rgb_window.min()) / (rgb_window.max() - rgb_window.min() + 1e-8)
+
+        # Transpose to (H, W, C) for display
+        rgb_display = np.transpose(rgb_window, (1, 2, 0))
+
+        # Display the window
+        ax.imshow(rgb_display)
+
+        # Get per-window probability from pre-computed predictions
+        window_prob = None
+        if window_predictions is not None and center_idx in window_predictions:
+            window_prob = window_predictions[center_idx]
+
+        # Set title with per-window probability
+        if window_prob is not None:
+            ax.set_title(f'Slice {center_idx}\nProb: {window_prob:.3f}', fontsize=10)
+        else:
+            ax.set_title(f'Slice {center_idx}', fontsize=10)
+
+        ax.axis('off')
+
+        # Add border color based on ground truth
+        for spine in ax.spines.values():
+            spine.set_edgecolor(gt_color)
+            spine.set_linewidth(3)
+
+    # Hide unused subplots
+    for idx in range(len(center_indices), 9):
+        row, col = idx // 3, idx % 3
+        axes[row, col].axis('off')
+
+    # Add legend
+    legend_elements = [
+        plt.Rectangle((0, 0), 1, 1, facecolor='green', alpha=0.3, label='Aneurysm Present'),
+        plt.Rectangle((0, 0), 1, 1, facecolor='red', alpha=0.3, label='No Aneurysm'),
+        plt.Line2D([0], [0], color='green', linewidth=3, label='GT: Present'),
+        plt.Line2D([0], [0], color='red', linewidth=3, label='GT: Absent')
+    ]
+    fig.legend(handles=legend_elements, loc='lower center', bbox_to_anchor=(0.5, -0.02), 
+               ncol=4, fontsize=10)
+
+    plt.tight_layout()
+    return fig
+
+
+def visualize_random_samples(inference_engine, true_labels_df: pd.DataFrame, 
+                           num_samples: int = 6, cache_dir: str = None) -> None:
+    """
+    Visualize random samples with their predictions and ground truth
+    
+    Args:
+        inference_engine: InferenceEngine instance with OOF predictions
+        true_labels_df: DataFrame with ground truth labels
+        num_samples: Number of random samples to visualize
+        cache_dir: Directory containing cached volumes
+    """
+    if cache_dir is None:
+        cache_dir = inference_engine.config.cache_dir
+    
+    # Get samples that have both predictions and ground truth
+    available_samples = []
+    for sample_id in inference_engine.oof_predictions.keys():
+        if sample_id in true_labels_df[ID_COL].values:
+            available_samples.append(sample_id)
+    
+    if not available_samples:
+        print("No samples available for visualization")
+        return
+    
+    # Select random samples
+    selected_samples = np.random.choice(available_samples, 
+                                      size=min(num_samples, len(available_samples)), 
+                                      replace=False)
+    
+    print(f"Visualizing {len(selected_samples)} random samples...")
+    
+    for i, sample_id in enumerate(selected_samples):
+        try:
+            # Get modality for this sample
+            sample_row = true_labels_df[true_labels_df[ID_COL] == sample_id]
+            if len(sample_row) == 0:
+                print(f"❌ No modality information found for sample {sample_id}")
+                continue
+            modality = sample_row['Modality'].iloc[0]
+            
+            # Load volume with proper modality-specific re-normalization
+            volume_path = f"{cache_dir}/{sample_id}.npz"
+            volume = load_cached_volume_with_renormalization(volume_path, modality)
+            
+            # Get prediction and ground truth
+            prediction = inference_engine.oof_predictions[sample_id][0]  # Binary prediction
+            ground_truth = true_labels_df[true_labels_df[ID_COL] == sample_id]['Aneurysm Present'].iloc[0]
+            
+            # Get the appropriate model for this sample (OOF model)
+            sample_fold = inference_engine.fold_assignments.get(sample_id, -1)
+            model = inference_engine.fold_models.get(sample_fold, None) if sample_fold != -1 else None
+            
+            # Compute window predictions
+            window_predictions = None
+            if model is not None:
+                window_predictions = compute_window_predictions(volume, model)
+            
+            # Create montage with per-window probabilities
+            fig = create_sample_montage(volume, sample_id, prediction, ground_truth, 
+                                      window_predictions=window_predictions)
+            plt.show()
+            
+        except Exception as e:
+            print(f"Error visualizing sample {sample_id}: {e}")
+            continue
+
+
+def visualize_sample_by_prediction_type(inference_engine, true_labels_df: pd.DataFrame,
+                                       prediction_type: str = "false_negatives",
+                                       num_samples: int = 3, cache_dir: str = None) -> None:
+    """
+    Visualize samples by prediction type (true_positives, false_positives, etc.)
+    
+    Args:
+        inference_engine: InferenceEngine instance with OOF predictions
+        true_labels_df: DataFrame with ground truth labels
+        prediction_type: Type of predictions to visualize
+        num_samples: Number of samples to visualize
+        cache_dir: Directory containing cached volumes
+    """
+    if cache_dir is None:
+        cache_dir = inference_engine.config.cache_dir
+    
+    # Categorize samples
+    samples_by_type = {
+        'true_positives': [],
+        'true_negatives': [],
+        'false_positives': [],
+        'false_negatives': []
+    }
+    
+    for sample_id in inference_engine.oof_predictions.keys():
+        if sample_id not in true_labels_df[ID_COL].values:
+            continue
+            
+        prediction = inference_engine.oof_predictions[sample_id][0]
+        ground_truth = true_labels_df[true_labels_df[ID_COL] == sample_id]['Aneurysm Present'].iloc[0]
+        pred_binary = 1 if prediction >= 0.5 else 0
+        
+        if ground_truth == 1 and pred_binary == 1:
+            samples_by_type['true_positives'].append((sample_id, prediction, ground_truth))
+        elif ground_truth == 0 and pred_binary == 0:
+            samples_by_type['true_negatives'].append((sample_id, prediction, ground_truth))
+        elif ground_truth == 0 and pred_binary == 1:
+            samples_by_type['false_positives'].append((sample_id, prediction, ground_truth))
+        elif ground_truth == 1 and pred_binary == 0:
+            samples_by_type['false_negatives'].append((sample_id, prediction, ground_truth))
+    
+    if prediction_type not in samples_by_type:
+        print(f"Invalid prediction type: {prediction_type}")
+        print(f"Available types: {list(samples_by_type.keys())}")
+        return
+    
+    selected_samples = samples_by_type[prediction_type]
+    if not selected_samples:
+        print(f"No {prediction_type} samples found")
+        return
+    
+    # Select random samples of this type
+    if len(selected_samples) > num_samples:
+        selected_indices = np.random.choice(len(selected_samples), size=num_samples, replace=False)
+        selected_samples = [selected_samples[i] for i in selected_indices]
+    
+    print(f"Visualizing {len(selected_samples)} {prediction_type} samples...")
+    
+    for sample_id, prediction, ground_truth in selected_samples:
+        try:
+            # Get modality for this sample
+            sample_row = true_labels_df[true_labels_df[ID_COL] == sample_id]
+            if len(sample_row) == 0:
+                print(f"❌ No modality information found for sample {sample_id}")
+                continue
+            modality = sample_row['Modality'].iloc[0]
+            
+            # Load volume with proper modality-specific re-normalization
+            volume_path = f"{cache_dir}/{sample_id}.npz"
+            volume = load_cached_volume_with_renormalization(volume_path, modality)
+            
+            # Get the appropriate model for this sample (OOF model)
+            sample_fold = inference_engine.fold_assignments.get(sample_id, -1)
+            model = inference_engine.fold_models.get(sample_fold, None) if sample_fold != -1 else None
+            
+            # Compute window predictions
+            window_predictions = None
+            if model is not None:
+                window_predictions = compute_window_predictions(volume, model)
+            
+            # Create montage with per-window probabilities
+            fig = create_sample_montage(volume, sample_id, prediction, ground_truth, 
+                                      window_predictions=window_predictions)
+            plt.show()
+            
+        except Exception as e:
+            print(f"Error visualizing sample {sample_id}: {e}")
+            continue
